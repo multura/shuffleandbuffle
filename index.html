@@ -176,7 +176,7 @@ document.getElementById("shuffle").addEventListener("click",async()=>{
   const dl = document.getElementById("download");
   const wavBlob = bufferToWav(newBuffer);
   dl.href = URL.createObjectURL(wavBlob);
-  dl.download = "buffer-shuffled.wav";
+  dl.download = "snbOutput.wav";
 });
 
 // play button
