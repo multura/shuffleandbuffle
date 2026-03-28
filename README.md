@@ -1,4 +1,4 @@
-# Buffer Shuffle Audio Tool
+# shuffle and buffle
 
 **Description:**  
 A web-based tool for applying **buffer shuffle** effects to audio files.  
