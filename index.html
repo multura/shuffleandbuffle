@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>buffer shuffle audio</title>
+<style>
+body{
+  margin:0;
+  background:#000;
+  color:#fff;
+  font-family:Arial, Helvetica, sans-serif;
+  text-transform:lowercase;
+}
+.container{
+  max-width:500px;
+  margin:auto;
+  padding:20px;
+}
+label{
+  display:block;
+  margin-top:20px;
+  margin-bottom:4px;
+  font-size:14px;
+}
+input[type=range]{
+  width:100%;
+  margin:0;
+}
+button,a.button{
+  display:inline-block;
+  padding:10px 16px;
+  margin:10px 5px 0 0;
+  background:#222;
+  border:none;
+  color:#fff;
+  font-size:14px;
+  text-decoration:none;
+  cursor:pointer;
+}
+button:active,a.button:active{
+  background:#0f0;
+  color:#000;
+}
+canvas{
+  width:100%;
+  height:100px;
+  margin-top:10px;
+  background:#111;
+  display:block;
+}
+.audio-controls{
+  margin-top:10px;
+}
+.header-text{
+  margin-bottom:6px;
+  font-size:14px;
+  color:#888;
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+shuffer and buffle
+<hr style="color:white;"><br>
+<input type="file" id="file" accept="audio/wav, audio/mp3, audio/m4a, audio/ogg, audio/flac">
+<br><br>
+<div class="header-text">controls</div>
+<label>block size (bytes)</label>
+<input type="range" id="chunk" min="256" max="8192" value="1024">
+
+<label>shuffle intensity (%)</label>
+<input type="range" id="intensity" min="1" max="100" value="5">
+
+<label>start offset (%)</label>
+<input type="range" id="startOffset" min="0" max="50" value="0">
+
+<label>end offset (%)</label>
+<input type="range" id="endOffset" min="50" max="100" value="100">
+
+<button id="shuffle">shuffle buffer</button>
+<br><br>
+<div class="audio-controls">
+  <div class="header-text">player</div>
+  <button id="play">play</button>
+  <button id="pause">pause</button>
+  <a id="download" class="button">download</a>
+</div> <br>
+
+<div class="header-text">visualizer</div>
+<canvas id="visual"></canvas>
+</div>
+
+<script>
+let audioCtx, analyser, bufferLength, dataArray;
+let sourceNode = null;
+let shuffledBuffer = null;
+let isPlaying = false;
+
+function initAudioContext(){
+  if(!audioCtx){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    bufferLength = analyser.fftSize;
+    dataArray = new Uint8Array(bufferLength);
+    updateVisualization();
+  }
+}
+
+function updateVisualization(){
+  requestAnimationFrame(updateVisualization);
+  if(!sourceNode || !dataArray) return;
+  analyser.getByteTimeDomainData(dataArray);
+  let canvas = document.getElementById("visual");
+  let ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.lineWidth=2;
+  ctx.strokeStyle="#0f0";
+  ctx.beginPath();
+  let sliceWidth = canvas.width / bufferLength;
+  let x = 0;
+  for(let i=0;i<bufferLength;i++){
+    let v = dataArray[i]/128.0;
+    let y = v*canvas.height/2;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    x += sliceWidth;
+  }
+  ctx.stroke();
+}
+
+// shuffle buffer
+document.getElementById("shuffle").addEventListener("click",async()=>{
+  initAudioContext();
+  const file = document.getElementById("file").files[0];
+  if(!file) return alert("choose a wav file");
+
+  const arrayBuffer = await file.arrayBuffer();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+  let chunkSize = parseInt(document.getElementById("chunk").value);
+  let intensity = parseInt(document.getElementById("intensity").value)/100;
+  let startPct = parseInt(document.getElementById("startOffset").value)/100;
+  let endPct = parseInt(document.getElementById("endOffset").value)/100;
+
+  let startSample = Math.floor(audioBuffer.length*startPct);
+  let endSample = Math.floor(audioBuffer.length*endPct);
+  let lengthToShuffle = endSample-startSample;
+  let numChunks = Math.floor(lengthToShuffle/chunkSize);
+
+  let chunks=[];
+  for(let i=0;i<numChunks;i++){
+    chunks.push(audioBuffer.getChannelData(0).slice(startSample+i*chunkSize,startSample+(i+1)*chunkSize));
+  }
+
+  let numSwaps = Math.floor(chunks.length*intensity);
+  for(let i=0;i<numSwaps;i++){
+    let a = Math.floor(Math.random()*chunks.length);
+    let b = Math.floor(Math.random()*chunks.length);
+    [chunks[a],chunks[b]]=[chunks[b],chunks[a]];
+  }
+
+  let shuffledData = new Float32Array(lengthToShuffle);
+  for(let i=0;i<chunks.length;i++) shuffledData.set(chunks[i],i*chunkSize);
+
+  let newBuffer = audioCtx.createBuffer(1,audioBuffer.length,audioBuffer.sampleRate);
+  newBuffer.copyToChannel(audioBuffer.getChannelData(0).slice(0,startSample),0,0);
+  newBuffer.copyToChannel(shuffledData,0,startSample);
+  newBuffer.copyToChannel(audioBuffer.getChannelData(0).slice(endSample),0,endSample);
+
+  shuffledBuffer = newBuffer;
+
+  // update download link
+  const dl = document.getElementById("download");
+  const wavBlob = bufferToWav(newBuffer);
+  dl.href = URL.createObjectURL(wavBlob);
+  dl.download = "buffer-shuffled.wav";
+});
+
+// play button
+document.getElementById("play").addEventListener("click",()=>{
+  if(!shuffledBuffer) return alert("shuffle first");
+  if(sourceNode) sourceNode.disconnect();
+  sourceNode = audioCtx.createBufferSource();
+  sourceNode.buffer = shuffledBuffer;
+  sourceNode.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  sourceNode.start();
+  isPlaying = true;
+});
+
+// pause button
+document.getElementById("pause").addEventListener("click",()=>{
+  if(sourceNode && isPlaying){
+    sourceNode.stop();
+    isPlaying = false;
+  }
+});
+
+// convert buffer to wav
+function bufferToWav(abuffer){
+  let numOfChan = abuffer.numberOfChannels,
+      length = abuffer.length*numOfChan*2+44,
+      buffer = new ArrayBuffer(length),
+      view = new DataView(buffer),
+      channels = [], i, sample, pos=0;
+  function setUint16(d){view.setUint16(pos,d,true);pos+=2;}
+  function setUint32(d){view.setUint32(pos,d,true);pos+=4;}
+  setUint32(0x46464952);setUint32(length-8);setUint32(0x45564157);setUint32(0x20746d66);setUint32(16);
+  setUint16(1);setUint16(numOfChan);setUint32(abuffer.sampleRate);setUint32(abuffer.sampleRate*2*numOfChan);
+  setUint16(numOfChan*2);setUint16(16);setUint32(0x61746164);setUint32(length-pos-4);
+  for(i=0;i<abuffer.numberOfChannels;i++) channels.push(abuffer.getChannelData(i));
+  let offset=0;
+  while(pos<length){
+    for(i=0;i<numOfChan;i++){
+      sample=Math.max(-1,Math.min(1,channels[i][offset]));
+      view.setInt16(pos,sample<0?sample*0x8000:sample*0x7FFF,true);
+      pos+=2;
+    }
+    offset++;
+  }
+  return new Blob([buffer],{type:"audio/wav"});
+}
+</script>
+</body>
+</html>
